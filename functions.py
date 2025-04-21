@@ -7,9 +7,9 @@ import matplotlib.pyplot as plt
 
 flags = re.IGNORECASE | re.MULTILINE
 
-number = r"(?:no.?|number|№) *(?:of)? *"
-participants = r"(?:participants|patients|persons|people|women|men|children|infants|babies|eyes|couples|limbs|teeth|procedures|episodes|intubations|paa|restorations|ulcers)"
-studies = r"(?:randomised|randomized|observational|cross-over)?\s*(?:stud|trial|rct):?\s*"
+number = r"(?:(?:no.?|number|№) *(?:of)? *)"
+participants = r"(?:(?:participants|patients|persons|people|women|men|children|infants|babies|neonates|births|eyes|couples|limbs|teeth|procedures|episodes|intubations|paa|restorations|ulcers|lps):?\s*)"
+studies = r"(?:(?:randomised|randomized|observational|cross-over|cross‐over|quasi|cohort|case-control|case‐control|cluster|its)?(?:-|‐|\s*)?(?:study|studie|trial|rct)s?:?\s*)"
 
 def table_merged_df(table):
     full_table_df = pd.read_html(StringIO(str(table)))[0].fillna('')
@@ -26,7 +26,7 @@ def table_merged_df(table):
     if table_title and (table_title.startswith("Patient or population") or table_title.startswith("Outcome")):
         table_title = table.find('span', class_='table-title').text.strip()
 
-    # Separate rows in header_rows, main_rows, footer_rows
+    # Separate rows in header_rows (usually full-colspan rows including Title and meta-information like Population, Settings, Intervention, Comparison), main_rows, footer_rows
     rows = table.find_all('tr')
     few_td_rows = [len(row.find_all('td')) <= 2 for row in rows] # some reviews have 2 columns for header (on purpose, e.g. CD000329; not on purpose, e.g. CD002745.PUB3, CD001191.PUB4)len(row.find_all('td'))
     max_colspan_rows = [int(row.find('td').get('colspan')) >= max_columns for row in rows]
@@ -88,6 +88,9 @@ def table_merged_df(table):
 
     merged_df = pd.DataFrame(new_rows[1:], columns=new_rows[0])
 
+    # Remove colspan==(max_colspan-1) - sometimes they're subheaders (e.g. CD010571.PUB2), sometimes they're genuine unique outcomes but without data (e.g. CD006919.PUB5), sometimes they're ill-defined footer rows (e.g. CD013732.PUB)
+    #merged_df = merged_df[merged_df.iloc[:, 1:].nunique(axis=1)>1]
+
     # Must have at least one row (i.e. outcome)
     if not merged_df.shape[0]:
         return False
@@ -132,11 +135,15 @@ def extract_relative_effects_numbers_quality(combined_sof_df):
     # Extract certainty_cleaned
     grade = ["verylw", "low", "moderate", "high"]
     def match_grade(x):
-        x= str(x).lower().replace("verylow", "very low") # CD008649.PUB4
-        x= str(x).lower().replace("m oderate", "moderate") # CD007880.PUB3
-        x= str(x).lower().replace("l ow", "low") # CD004711.PUB3
-        x= str(x).lower().replace("very low", "verylw") # to differentiate very low and low
-        matches = [g for g in grade if g in x]
+        x= str(x).lower()
+        x= x.replace("high risk", "") # CD003010.PUB5
+        x= x.replace("high cardiovascular risk", "")
+        x= x.replace("verylow", "very low") # CD008649.PUB4
+        x= x.replace("m oderate", "moderate") # CD007880.PUB3
+        x= x.replace("l ow", "low") # CD004711.PUB3
+        x= x.replace("very low", "verylw") # to differentiate very low and low
+        #matches = [g for g in grade if g in x]
+        matches = [g for g in grade if re.search(rf"\b{g}", x)] # leading \b is important (e.g. "follow"), but following \b is not suitable because of superscript letters immediately afterwards ("e.g. lowa,b,c")
         if len(matches) >= 1:
             if matches[0] == "verylw":
                 matches[0] = "very low"
@@ -145,94 +152,91 @@ def extract_relative_effects_numbers_quality(combined_sof_df):
             return "NA"
     combined_sof_df["certainty_cleaned"] = combined_sof_df["certainty"].apply(match_grade)
 
-    combined_sof_df["certainty_cleaned"] = pd.Categorical(
-        combined_sof_df["certainty_cleaned"], 
-        categories=["very low", "low", "moderate", "high"],
-        ordered=True
-    )
+    # combined_sof_df["certainty_cleaned"] = pd.Categorical(
+    #     combined_sof_df["certainty_cleaned"], 
+    #     categories=["very low", "low", "moderate", "high"],
+    #     ordered=True
+    # )
 
-    # Remove thousands separators , and ' (don't remove thousands searator space " ", because otherwise e.g. in CD008649.PUB4, "22 1 study" will be converted to "221 study")
+    # Extract nr_participants_cleaned, nr_studies_cleaned
+    # Remove thousands separators . and , and ' (don't remove thousands searator space " ", because otherwise e.g. in CD008649.PUB4, "22 1 study" will be converted to "221 study")
     # and convert written numbers 1-9 to digits
-    # and remove superscript numbers (e.g. CD008649.PUB4)
-    nr_participants_studies_processed = combined_sof_df["nr_participants_studies"].\
-        str.replace(r"\b(\d+),(\d+)\b", r'\1\2', regex=True, flags=flags).str.replace(r"\b(\d+)'(\d+)\b", r'\1\2', regex=True, flags=flags).\
+    # and remove superscript digits (e.g. CD008649.PUB4)
+    # and remove single letters after numbers (which were most likely superscript letters) (e.g. CD008774.PUB2)
+    # and remove trailing N=
+    combined_sof_df["nr_participants_studies_cleaned"] = combined_sof_df["nr_participants_studies"].\
+        str.replace(r"\b(\d+)\.(\d+)\b", r'\1\2', regex=True, flags=flags).\
+        str.replace(r"\b(\d+),(\d+)\b", r'\1\2', regex=True, flags=flags).\
+        str.replace(r"\b(\d+)'(\d+)\b", r'\1\2', regex=True, flags=flags).\
         str.replace(r'\bone\b', '1', regex=True, flags=flags).str.replace(r'\btwo\b', '2', regex=True, flags=flags).str.replace(r'\bthree\b', '3', regex=True, flags=flags).str.replace(r'\bfour\b', '4', regex=True, flags=flags).str.replace(r'\bfive\b', '5', regex=True, flags=flags).str.replace(r'\bsix\b', '6', regex=True, flags=flags).str.replace(r'\bseven\b', '7', regex=True, flags=flags).str.replace(r'\beight\b', '8', regex=True, flags=flags).str.replace(r'\bnine\b', '9', regex=True, flags=flags).\
         str.replace(r'[⁰¹²³⁴⁵⁶⁷⁸⁹]*', '', regex=True, flags=flags).\
+        str.replace(r'(\d+)[a-zA-Z*](?:,[a-zA-Z*])*\b', r'\1', regex=True, flags=flags).\
         str.replace(r'N\s*=\s*', '', regex=True, flags=flags)
-    nr_participants_studies_all_numbers = nr_participants_studies_processed.str.extractall(r'(\d+)', re.MULTILINE)
+    nr_participants_studies_all_numbers = combined_sof_df["nr_participants_studies_cleaned"].str.extractall(r'(\d+)', re.MULTILINE)
     combined_sof_df["nr_participants_studies_col_nr_of_nr"] = nr_participants_studies_all_numbers.groupby(level=0).size().reindex(combined_sof_df.index, fill_value=0)
     
-    # Most specific extraction
+    # extract nr_participants_cleaned and nr_studies_cleaned together
+    # extract 0 cases
     combined_sof_df.loc[\
-        (combined_sof_df["nr_participants_studies_col_nr_of_nr"] >= 2) & \
-        combined_sof_df["nr_participants_studies_col"].str.contains(rf"{participants}.+\s*.*{studies}", flags=flags), \
-        ["nr_participants_cleaned", "nr_studies_cleaned"]] = \
-        nr_participants_studies_processed.str.extract(r'^(\d+)\b[\s([,:]+\b(\d+)', flags=flags).astype(float).rename({0: "nr_participants_cleaned", 1: "nr_studies_cleaned"}, axis=1)
-    combined_sof_df.loc[\
-        (combined_sof_df["nr_participants_studies_col_nr_of_nr"] >= 2) & \
-        combined_sof_df["nr_participants_studies_col"].str.contains(rf"{studies}.+\s*.*{participants}", flags=flags), \
-        ["nr_studies_cleaned", "nr_participants_cleaned"]] = \
-        nr_participants_studies_processed.str.extract(r'^(\d+)\b[\s([,:]+\b(\d+)', flags=flags).astype(float).rename({0: "nr_studies_cleaned", 1: "nr_participants_cleaned"}, axis=1)
+        (combined_sof_df["nr_participants_studies_col_nr_of_nr"] == 1) & \
+        (combined_sof_df["nr_participants_studies_cleaned"].str.extract(r'(\d+)', flags=flags)[0].astype(float)==0), \
+        ["nr_participants_cleaned", "nr_studies_cleaned"]] = 0
 
-    # combined_sof_df.loc[\
-    #     #combined_sof_df["nr_participants_cleaned"].isna() & \
-    #     (combined_sof_df["nr_participants_studies_col_nr_of_nr"] >= 2) & \
-    #     combined_sof_df["nr_participants_studies_col"].str.contains(rf"{participants}.+\s*.*{studies}", flags=flags), \
-    #     ["nr_participants_cleaned", "nr_studies_cleaned"]] = \
-    #     nr_participants_studies_processed.str.extract(r'(\d+)\b.*\b(\d+)', flags=flags).astype(float).rename({0: "nr_participants_cleaned", 1: "nr_studies_cleaned"}, axis=1)
-    # combined_sof_df.loc[\
-    #     #combined_sof_df["nr_participants_cleaned"].isna() & \
-    #     (combined_sof_df["nr_participants_studies_col_nr_of_nr"] >= 2) & \
-    #     combined_sof_df["nr_participants_studies_col"].str.contains(rf"{studies}.+\s*.*{participants}", flags=flags), \
-    #     ["nr_studies_cleaned", "nr_participants_cleaned"]] = \
-    #     nr_participants_studies_processed.str.extract(r'(\d+)\b.*\b(\d+)', flags=flags).astype(float).rename({0: "nr_studies_cleaned", 1: "nr_participants_cleaned"}, axis=1)
-    
+    # most common: nr_participants_studies_col mentions participants and studies in this order (>2/3 of PICOs)
+    combined_sof_df.loc[\
+        (combined_sof_df["nr_participants_studies_col_nr_of_nr"] == 2) & \
+        combined_sof_df["nr_participants_studies_col"].str.contains(rf"{participants}.+\s*.*{studies}", flags=flags) & \
+        combined_sof_df["nr_participants_studies_cleaned"].str.contains(rf'^(\d+)\b\s*{participants}?[\s([,:]+\b(\d+)', flags=flags), \
+        ["nr_participants_cleaned", "nr_studies_cleaned"]] = \
+        combined_sof_df["nr_participants_studies_cleaned"].str.extract(rf'^(\d+)\b\s*{participants}?[\s([,:]+\b(\d+)', flags=flags).astype(float).rename({0: "nr_participants_cleaned", 1: "nr_studies_cleaned"}, axis=1)
+    # much rarer: nr_participants_studies_col mentions studies and participants in this (reversed) order
+    combined_sof_df.loc[\
+        (combined_sof_df["nr_participants_cleaned"].isna() & combined_sof_df["nr_studies_cleaned"].isna()) & \
+        (combined_sof_df["nr_participants_studies_col_nr_of_nr"] == 2) & \
+        combined_sof_df["nr_participants_studies_col"].str.contains(rf"{studies}.+\s*.*{participants}", flags=flags) & \
+        combined_sof_df["nr_participants_studies_cleaned"].str.contains(rf'^(\d+)\b\s*{studies}?[\s([,:]+\b(\d+)', flags=flags), \
+        ["nr_studies_cleaned", "nr_participants_cleaned"]] = \
+        combined_sof_df["nr_participants_studies_cleaned"].str.extract(rf'^(\d+)\b\s*{studies}?[\s([,:]+\b(\d+)', flags=flags).astype(float).rename({0: "nr_studies_cleaned", 1: "nr_participants_cleaned"}, axis=1)
+
+    # nr_participants_cleaned and nr_studies_cleaned separately
+    combined_sof_df["nr_participants_cleaned"] = \
+        combined_sof_df["nr_participants_cleaned"].fillna(combined_sof_df["nr_participants_studies_cleaned"].str.extract(rf'(\d+)\s?{participants}', flags=flags, expand=False).astype(float))
+    combined_sof_df["nr_studies_cleaned"] = \
+        combined_sof_df["nr_studies_cleaned"].fillna(combined_sof_df["nr_participants_studies_cleaned"].str.extract(rf'(\d+)\s?{studies}', flags=flags, expand=False).astype(float))
+
+    # Where the format is "Number of participants: x (y studies)" => y would have been picked up above, but x not (mostly if not exclusively for cases where rownames_col == nr_participants_studies_col)
     combined_sof_df.loc[\
         combined_sof_df["nr_participants_cleaned"].isna() & \
-        combined_sof_df["nr_participants_studies_col"].str.contains(rf"^(?:{number})?{participants}", flags=flags), \
+        combined_sof_df["nr_participants_studies_cleaned"].str.contains(rf"{number}{participants}(\d+)", flags=flags), \
         "nr_participants_cleaned"] = \
-        nr_participants_studies_processed.str.extract(r'^(\d+)', flags=flags, expand=False).astype(float)
+        combined_sof_df["nr_participants_studies_cleaned"].str.extract(rf'{number}{participants}(\d+)', flags=flags, expand=False).astype(float)
+
+    # For cases where column title is only "No of participants" but format is actually "x (y studies)" => y would have been picked up above, but x not
+    combined_sof_df.loc[\
+        combined_sof_df["nr_participants_cleaned"].isna() & \
+        combined_sof_df["nr_participants_studies_col"].str.contains(rf"^{number}?{participants}", flags=flags) & \
+        (combined_sof_df["nr_participants_studies_cleaned"].str.contains(r'^\d+$', flags=flags) | combined_sof_df["nr_participants_studies_cleaned"].str.contains(r'^\d+\s*\(', flags=flags)), \
+        "nr_participants_cleaned"] = \
+        combined_sof_df["nr_participants_studies_cleaned"].str.extract(r'^(\d+)', flags=flags, expand=False).astype(float)
+    # For cases where column title is only "No of studies" but format is actually "x (y participants)" => y would have been picked up above, but x not
     combined_sof_df.loc[\
         combined_sof_df["nr_studies_cleaned"].isna() & \
-        combined_sof_df["nr_participants_studies_col"].str.contains(rf"^(?:{number})?{studies}", flags=flags), \
+        combined_sof_df["nr_participants_studies_col"].str.contains(rf"^{number}?{studies}", flags=flags) & \
+        (combined_sof_df["nr_participants_studies_cleaned"].str.contains(r'^\d+$', flags=flags) | combined_sof_df["nr_participants_studies_cleaned"].str.contains(r'^\d+\s*\(', flags=flags)), \
         "nr_studies_cleaned"] = \
-        nr_participants_studies_processed.str.extract(r'^(\d+)', flags=flags, expand=False).astype(float)
-    
-    combined_sof_df.loc[\
-        combined_sof_df["nr_participants_cleaned"].isna() & \
-        combined_sof_df["nr_participants_studies"].str.contains(rf"{number}{participants}(\d+)", flags=flags), \
-        "nr_participants_cleaned"] = \
-        nr_participants_studies_processed.str.extract(rf'{number}{participants}(\d+)', flags=flags, expand=False).astype(float)
-    # Still specific extraction
-    # extraction = nr_participants_studies_processed[\
-    #     combined_sof_df[["nr_participants_cleaned", "nr_studies_cleaned"]].isna().all(axis=1)].\
-    #     str.extract(rf'(\d+)\s*{participants}[\s,(\[]+(\d+)\s*{studies}', flags=flags)
-    
-    # combined_sof_df.loc[\
-    #     combined_sof_df["nr_participants_studies_col"].str.contains(rf"^{participants}") & \
-    #     extraction.notna().all(axis=1), \
-    #     ['nr_participants_cleaned', 'nr_studies_cleaned']] = \
-    #     extraction[extraction.notna().all(axis=1)].astype(float).to_numpy()
-    # #combined_sof_df.loc[extraction.notna().all(axis=1), "nr_participants_studies_col_nr_found"] = 2
-    # Less specific extraction
-    combined_sof_df["nr_participants_cleaned"] = combined_sof_df["nr_participants_cleaned"].fillna(nr_participants_studies_processed.str.extract(rf'(\d+)\s?{participants}', flags=flags).astype(float).squeeze())
-    combined_sof_df["nr_studies_cleaned"] = combined_sof_df["nr_studies_cleaned"].fillna(nr_participants_studies_processed.str.extract(rf'(\d+)\s?{studies}', flags=flags).astype(float).squeeze())
-
-    #combined_sof_df.loc[combined_sof_df["nr_participants_studies_col_nr_found"].isna(), "nr_participants_studies_col_nr_found"] = combined_sof_df[["nr_participants_cleaned", "nr_studies_cleaned"]].notna().sum(axis=1)
+        combined_sof_df["nr_participants_studies_cleaned"].str.extract(r'^(\d+)', flags=flags, expand=False).astype(float)
+        
     # If one is 0, so is the other
     combined_sof_df.loc[(combined_sof_df["nr_studies_cleaned"] == 0) & combined_sof_df["nr_participants_cleaned"].isna(), "nr_participants_cleaned"] = 0
     combined_sof_df.loc[(combined_sof_df["nr_participants_cleaned"] == 0) & combined_sof_df["nr_studies_cleaned"].isna(), "nr_studies_cleaned"] = 0
-    
-    #combined_sof_df[["nr_participants_cleaned", "nr_studies_cleaned"]]=np.nan
-    #combined_sof_df[["nr_participants_cleaned", "nr_studies_cleaned"]].sum()
-    #combined_sof_df[["nr_participants_studies_col", "nr_participants_studies", "nr_participants_studies_col_nr_of_nr", "nr_participants_cleaned", "nr_studies_cleaned"]]
-    #combined_sof_df.loc[combined_sof_df[["nr_participants_cleaned", "nr_studies_cleaned"]].isna().any(axis=1) & (combined_sof_df["nr_participants_studies_col_nr_of_nr"]>0), ["cochrane_id", "nr_participants_studies_col", "nr_participants_studies", "nr_participants_studies_col_nr_of_nr", "nr_participants_cleaned", "nr_studies_cleaned"]]
-    #combined_sof_df.loc[(combined_sof_df["nr_participants_studies_col_nr_of_nr"]>0), ["cochrane_id", "nr_participants_studies_col", "nr_participants_studies", "nr_participants_studies_col_nr_of_nr", "nr_participants_cleaned", "nr_studies_cleaned"]]
-    
 
     # Relative effects
+    combined_sof_df["relative_effects_cleaned"] = combined_sof_df["relative_effects"].\
+        str.replace(r"95%\s*CI:?\s*", "", regex=True, flags=flags).\
+        str.replace(r"\s*CI:?\s*", "", regex=True, flags=flags).\
+        str.replace(r'[⁰¹²³⁴⁵⁶⁷⁸⁹]*', '', regex=True, flags=flags).\
+        str.replace(r'(\d+)[a-zA-Z*](?:,[a-zA-Z*])*\b', r'\1', regex=True, flags=flags)
     effect_type_cleaned = {
-        #"incidence rate ratio": "IRR", # subsumed under RR
         "hazard ratio": "HR",
         "odds ratio": "OR",
         "relative risk": "RR", # doesn't seem to occur
@@ -244,37 +248,38 @@ def extract_relative_effects_numbers_quality(combined_sof_df):
     effect_type_full_re_str = rf"{'|'.join(effect_type_cleaned.keys())}"
     effect_type_acronym_re_str = rf"{'|'.join(effect_type_cleaned.values())}" # acronyms should be case sensitive because of lower case "or" in many columns
     effect_type_re_str = rf"({effect_type_full_re_str}|{effect_type_acronym_re_str})"
-    point_estimate_and_ci_re_str = r"\[?(\d+\.?\d*)\]?\s*\((?:95% ?CI )?\[?(\d+\.?\d*)\]?(?:\s*to\s*)?(?:,\s*)?\[?(\d+\.?\d*)\]?"
+    # Unfortunately this regex misses cases without decimal, e.g. RR 1.2 (0 to 2.4)
+    point_estimate_and_ci_re_str = r"\[?(\d+\.\d*)\]?[,;]?\s*\(?\[?(\d+\.\d*)\]?(?:\s*to\s*)?(?:,\s*)?\[?(\d+\.\d*)\]?"
     
     # effect_type is in each cell
     re_str = rf"{effect_type_re_str}:?\s*{point_estimate_and_ci_re_str}"
 
     combined_sof_df.loc[ \
-        combined_sof_df["relative_effects"].astype(str).str.contains(re_str, flags=flags), \
+        combined_sof_df["relative_effects_cleaned"].astype(str).str.contains(re_str, flags=flags), \
         ["effect_type", "point_estimate", "lower_ci", "upper_ci"]] = \
-        combined_sof_df["relative_effects"].astype(str).str.extract(re_str, flags=flags).rename({0: "effect_type", 1: "point_estimate", 2: "lower_ci", 3: "upper_ci"}, axis=1)
+        combined_sof_df["relative_effects_cleaned"].astype(str).str.extract(re_str, flags=flags).rename({0: "effect_type", 1: "point_estimate", 2: "lower_ci", 3: "upper_ci"}, axis=1)
     
     # effect_type is in header only
     combined_sof_df.loc[ \
-        ~combined_sof_df["relative_effects"].astype(str).str.contains(re_str, flags=flags) & \
-        combined_sof_df["relative_effects"].astype(str).str.contains(point_estimate_and_ci_re_str, flags=flags) & \
+        ~combined_sof_df["relative_effects_cleaned"].astype(str).str.contains(re_str, flags=flags) & \
+        combined_sof_df["relative_effects_cleaned"].astype(str).str.contains(point_estimate_and_ci_re_str, flags=flags) & \
         (combined_sof_df["relative_effects_col"].astype(str).str.contains(rf"{effect_type_full_re_str}", flags=flags) | \
         combined_sof_df["relative_effects_col"].astype(str).str.contains(rf"{effect_type_acronym_re_str}", flags=re.MULTILINE)), \
         ["point_estimate", "lower_ci", "upper_ci"]] = \
-        combined_sof_df["relative_effects"].str.extract(point_estimate_and_ci_re_str, flags=flags).rename({0: "point_estimate", 1: "lower_ci", 2: "upper_ci"}, axis=1)
+        combined_sof_df["relative_effects_cleaned"].str.extract(point_estimate_and_ci_re_str, flags=flags).rename({0: "point_estimate", 1: "lower_ci", 2: "upper_ci"}, axis=1)
     combined_sof_df.loc[ \
-        ~combined_sof_df["relative_effects"].astype(str).str.contains(re_str, flags=flags) & \
-        combined_sof_df["relative_effects"].astype(str).str.contains(point_estimate_and_ci_re_str, flags=flags) & \
+        ~combined_sof_df["relative_effects_cleaned"].astype(str).str.contains(re_str, flags=flags) & \
+        combined_sof_df["relative_effects_cleaned"].astype(str).str.contains(point_estimate_and_ci_re_str, flags=flags) & \
         combined_sof_df["relative_effects_col"].astype(str).str.contains(rf"{effect_type_full_re_str}", flags=flags), \
         "effect_type"] = \
-        combined_sof_df["relative_effects_col"].astype(str).str.extract(f"({effect_type_full_re_str})", flags=flags).rename({0: "effect_type"}, axis=1)
+        combined_sof_df["relative_effects_col"].astype(str).str.extract(f"({effect_type_full_re_str})", flags=flags).rename({0: "effect_type"}, axis=1) # effect_type_full_re_str is not case sensitive
     combined_sof_df.loc[ \
-        ~combined_sof_df["relative_effects"].astype(str).str.contains(re_str, flags=flags) & \
-        combined_sof_df["relative_effects"].astype(str).str.contains(point_estimate_and_ci_re_str, flags=flags) & \
+        ~combined_sof_df["relative_effects_cleaned"].astype(str).str.contains(re_str, flags=flags) & \
+        combined_sof_df["relative_effects_cleaned"].astype(str).str.contains(point_estimate_and_ci_re_str, flags=flags) & \
         ~combined_sof_df["relative_effects_col"].astype(str).str.contains(rf"{effect_type_full_re_str}", flags=flags) & \
         combined_sof_df["relative_effects_col"].astype(str).str.contains(rf"{effect_type_acronym_re_str}", flags=re.MULTILINE), \
         "effect_type"] = \
-        combined_sof_df["relative_effects_col"].astype(str).str.extract(rf"({effect_type_acronym_re_str})", flags=re.MULTILINE).rename({0: "effect_type"}, axis=1)
+        combined_sof_df["relative_effects_col"].astype(str).str.extract(rf"({effect_type_acronym_re_str})", flags=re.MULTILINE).rename({0: "effect_type"}, axis=1) # effect_type_acronym_re_str is case sensitive
 
     # Convert to float
     combined_sof_df[["point_estimate", "lower_ci", "upper_ci"]] = combined_sof_df[["point_estimate", "lower_ci", "upper_ci"]].astype(float)
@@ -285,23 +290,19 @@ def extract_relative_effects_numbers_quality(combined_sof_df):
         combined_sof_df.loc[combined_sof_df["effect_type"].isin(effect_type_cleaned.keys()), "effect_type"].map(effect_type_cleaned)
     combined_sof_df["effect_type"] = combined_sof_df["effect_type"].str.upper()
 
-
-    combined_sof_df["has_relative_effect"] = combined_sof_df["effect_type"].notna()
-    # Consistency check
-    #(combined_sof_df.loc[~combined_sof_df["effect_type"].isna(), "lower_ci"] <= combined_sof_df.loc[~combined_sof_df["effect_type"].isna(), "upper_ci"]).value_counts(dropna=False)
-    combined_sof_df["mortality_outcome"] = combined_sof_df["rowname"].astype(str).str.contains("mortality|death")
-    combined_sof_df["significant"] = (combined_sof_df[["point_estimate", "lower_ci"]]>1).all(axis=1) | (combined_sof_df[["point_estimate", "lower_ci"]]<1).all(axis=1)
-    combined_sof_df["very_large_effect"] = (combined_sof_df["point_estimate"] >= 5) | (combined_sof_df["point_estimate"] <= 0.2)
-
-    combined_sof_df["primary_outcome"] = False
-    combined_sof_df.loc[(combined_sof_df["table_nr"] == 1) & (combined_sof_df["row_nr"] == 1), "primary_outcome"] = True
-
     return combined_sof_df
 # %%
-def create_box_pie_plot(combined_sof_df):
+def create_box_pie_plot(combined_sof_df, showmeans=False):
+    certainty_levels = pd.Series(["very low", "low", "moderate", "high"])
+    certainty_levels = certainty_levels[certainty_levels.isin(combined_sof_df["certainty_cleaned"].unique())]
+    combined_sof_df["certainty_cleaned"] = pd.Categorical(
+        combined_sof_df["certainty_cleaned"], 
+        categories=certainty_levels,
+        ordered=True
+    )
+
     # Create box-plot
     fig, ax = plt.subplots(figsize=(5, 5))
-    certainty_levels = ["very low", "low", "moderate", "high"]
     data = [combined_sof_df.loc[combined_sof_df["certainty_cleaned"] == level, "nr_participants_cleaned"].dropna() for level in certainty_levels]
     data_studies = [combined_sof_df.loc[combined_sof_df["certainty_cleaned"] == level, "nr_studies_cleaned"].dropna() for level in certainty_levels]
 
@@ -316,8 +317,9 @@ def create_box_pie_plot(combined_sof_df):
         labels=certainty_levels,
         showfliers=False,
         meanline=True,
-        showmeans=True,
+        showmeans=showmeans,
         patch_artist=True,
+        whis=0,
         boxprops=dict(facecolor="white", color="black"),
         medianprops=dict(color="black"),
         meanprops=dict(color="black", linestyle="--")
@@ -325,26 +327,27 @@ def create_box_pie_plot(combined_sof_df):
 
     # Create a second y-axis for the studies boxplot
     ax2 = ax.twinx()
-    ax2.set_ylabel('Number of studies', color='#206fb2', rotation=270, labelpad=10)
+    ax2.set_ylabel('Number of studies', color='grey', rotation=270, labelpad=10)
     ax2.set_ylim(0, 20)  # Set the range for the second y-axis
     #ax2.set_yscale('symlog')
     #ax2.set_ylim(1, 50)
     ax2.yaxis.set_major_locator(plt.MaxNLocator(integer=True))  # Ensure only whole ticks
-    ax2.tick_params(axis='y', colors='#206fb2')  # Set tick color to #206fb2
-    ax2.spines['right'].set_color('#206fb2')  # Set the right spine color to #206fb2
+    ax2.tick_params(axis='y', colors='grey')  # Set tick color to grey
+    ax2.spines['right'].set_color('grey')  # Set the right spine color to grey
 
     boxplot_studies = ax2.boxplot(
         data_studies,
         positions=np.arange(len(certainty_levels)) * 2.0 + 0.8,  # Shift positions for the second set of boxplots
         showfliers=False,
         meanline=True,
-        showmeans=True,
+        showmeans=showmeans,
         patch_artist=True,
-        boxprops=dict(facecolor="white", color="#206fb2"),
-        medianprops=dict(color="#206fb2"),
-        whiskerprops=dict(color="#206fb2"),
-        capprops=dict(color="#206fb2"),
-        meanprops=dict(color="#206fb2", linestyle="--")
+        whis=0,
+        boxprops=dict(facecolor="white", color="grey"),
+        medianprops=dict(color="black"),
+        whiskerprops=dict(color="grey"),
+        capprops=dict(color="grey"),
+        meanprops=dict(color="grey", linestyle="--")
     )
 
     ax.text(
@@ -375,7 +378,7 @@ def create_box_pie_plot(combined_sof_df):
             i * 2.0 + 0.7,  # x-coordinate (boxplot positions are 1-indexed)
             -700,  # y-coordinate (below the x-axis)
             f'{p75:.0f}\n{median_value:.0f}\n{p25:.0f}',
-            ha='left', va='top', fontsize=10, color='#206fb2'
+            ha='left', va='top', fontsize=10, color='grey'
         )
 
 
