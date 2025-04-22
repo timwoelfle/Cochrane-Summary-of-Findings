@@ -24,7 +24,7 @@ MainMenu, header, footer {visibility: hidden;}
 </style>
 """)
 
-st.header("Cochrane Reviews on Interventions with Summary of Findings (SoF) Table(s)")
+st.header("Cochrane Intervention Reviews with Summary of Findings (SoF) Tables")
 
 @st.cache_data
 def get_cochrane_info_incl_topics():
@@ -100,30 +100,20 @@ cochrane_info, review_groups, topics, keywords, final_sof_df = get_cochrane_info
 cochrane_info["Year / Issue"] = cochrane_info["Year"].astype(str) + "/" + cochrane_info["Issue"].astype(str).str.zfill(2)
 
 #%%
-cols = st.columns(3)
-
-# with cols[0]:
-#     topics_sel = st.multiselect(
-#         "Select Topics", topics.keys(),
-#         placeholder=f"Default: All {len(topics)} Topics",
-#         format_func=lambda x: f"{x} ({topics[x]})"
-#     )
-
-with cols[0]:
+with st.sidebar:
+    st.subheader("Select Reviews")
     review_groups_sel = st.multiselect(
         "Select Review Groups", review_groups.keys(),
         placeholder=f"Default: All {len(review_groups)} Review Groups",
         format_func=lambda x: f"{x} ({review_groups[x]})"
     )
 
-with cols[1]:
     keywords_sel = st.multiselect(
         "Select Keywords", keywords.keys(),
         placeholder=f"Default: All {len(keywords)} Keywords",
         format_func=lambda x: f"{x} ({keywords[x]})"
     )
 
-with cols[2]:
     min_year = int(cochrane_info["Year"].min())
     max_year = int(cochrane_info["Year"].max())
     year_range = st.slider(
@@ -134,48 +124,32 @@ with cols[2]:
         step=1
     )
 
-cols = st.columns([16, 16, 20 + 1, 6, 6, 6, 6, 12, 11], vertical_alignment="bottom")
+    st.subheader("Select Outcomes")
+    primary_outcomes_sel = st.checkbox("Primary Outcomes Only", help="The first outcome in the first Summary of Findings Table if it has a GRADE rating.", value=False)
+    mortality_outcomes_sel = st.checkbox("Mortality Outcomes Only", help="Outcomes with 'mortality' or 'death' in their name.", value=False)
+    outcomes_with_ratio_sel = st.checkbox("Outcomes with Relative Effects Only", help="Dichotomous (=binary) outcomes with Risk Ratios / Rate Ratios (RR), Odds Ratios (OR), Hazard Ratios (HR) in the 'Relative Effects' column.", value=False)
 
-primary_outcomes_sel = cols[0].checkbox("Primary outcomes only", help="The first outcome in the first Summary of Findings Table if it has a GRADE rating.", value=False)
-mortality_outcomes_sel = cols[1].checkbox("Mortality outcomes only", help="Outcomes with 'mortality' or 'death' in their name.", value=False)
-outcomes_with_ratio_sel = cols[2].checkbox("Outcomes with Relative Effects only", help="Dichotomous (=binary) outcomes with Risk Ratios / Rate Ratios (RR), Odds Ratios (OR), Hazard Ratios (HR) in the 'Relative Effects' column.", value=False)
+    effect_type_sel = {}
+    cols = st.columns(3)
+    effect_type_sel["RR"] = cols[0].checkbox("RR", help="Risk Ratio / Rate Ratio", value=True, disabled=not outcomes_with_ratio_sel)
+    effect_type_sel["OR"] = cols[1].checkbox("OR", help="Odds Ratio", value=True, disabled=not outcomes_with_ratio_sel)
+    effect_type_sel["HR"] = cols[2].checkbox("HR", help="Hazard Ratio", value=True, disabled=not outcomes_with_ratio_sel)
 
-effect_type_sel = {}
-effect_type_sel["RR"] = cols[3].checkbox("RR", help="Risk Ratio / Rate Ratio", value=True, disabled=not outcomes_with_ratio_sel)
-effect_type_sel["OR"] = cols[4].checkbox("OR", help="Odds Ratio", value=True, disabled=not outcomes_with_ratio_sel)
-effect_type_sel["HR"] = cols[5].checkbox("HR", help="Hazard Ratio", value=True, disabled=not outcomes_with_ratio_sel)
+    st.subheader("Effect Size")
+    effect_size_sel = {}
+    effect_size_sel["Very Large"] = st.checkbox("Very Large", help=f"RR/OR/HR ≥ {effect_size_cutoffs['Very Large']:.2f} or ≤ {1/effect_size_cutoffs['Very Large']:.2f}", value=True, disabled=not outcomes_with_ratio_sel)
+    effect_size_sel["Large"] = st.checkbox("Large", help=f"RR/OR/HR (≥ {effect_size_cutoffs['Large']:.2f} and < {effect_size_cutoffs['Very Large']:.2f}) or (> {1/effect_size_cutoffs['Very Large']:.2f} and ≤ {1/effect_size_cutoffs['Large']:.2f})", value=True, disabled=not outcomes_with_ratio_sel)
+    effect_size_sel["Medium"] = st.checkbox("Medium", help=f"RR/OR/HR (≥ {effect_size_cutoffs['Medium']:.2f} and < {effect_size_cutoffs['Large']:.2f}) or (> {1/effect_size_cutoffs['Large']:.2f} and ≤ {1/effect_size_cutoffs['Medium']:.2f})", value=True, disabled=not outcomes_with_ratio_sel)
+    effect_size_sel["Small"] = st.checkbox("Small", help=f"RR/OR/HR (≥ {effect_size_cutoffs['Small']:.2f} and < {effect_size_cutoffs['Medium']:.2f}) or (> {1/effect_size_cutoffs['Medium']:.2f} and ≤ {1/effect_size_cutoffs['Small']:.2f})", value=True, disabled=not outcomes_with_ratio_sel)
+    effect_size_sel["Minimal"] = st.checkbox("Minimal", help=f"RR/OR/HR (≥ {effect_size_cutoffs['Minimal']:.2f} and < {effect_size_cutoffs['Small']:.2f}) or (> {1/effect_size_cutoffs['Small']:.2f} and ≤ {1/effect_size_cutoffs['Minimal']:.2f})", value=True, disabled=not outcomes_with_ratio_sel)
 
-significant_sel = cols[7].checkbox("Significant", value=True, help="Only for Outcomes with ratios. Significant outcomes are those with RR/OR/HR confidence intervals (CIs) not including 1.", disabled=not outcomes_with_ratio_sel)
-nonsignificant_sel = cols[8].checkbox("Nonsignificant", value=True, help="Only for Outcomes with ratios. Significant outcomes are those with RR/OR/HR confidence intervals (CIs) not including 1.", disabled=not outcomes_with_ratio_sel)
+    st.subheader("Statistical Significance")
+    significant_sel = st.checkbox("Significant", value=True, help="Only for Outcomes with ratios. Significant outcomes are those with RR/OR/HR confidence intervals (CIs) not including 1.", disabled=not outcomes_with_ratio_sel)
+    nonsignificant_sel = st.checkbox("Non-Significant", value=True, help="Only for Outcomes with ratios. Significant outcomes are those with RR/OR/HR confidence intervals (CIs) not including 1.", disabled=not outcomes_with_ratio_sel)
 
-cols = st.columns([16, 16, 9, 8, 8, 8, 8 + 4, 12, 11], vertical_alignment="bottom")
-
-effect_size_sel = {}
-effect_size_sel["Very Large"] = cols[2].checkbox("Very Large", help=f"RR/OR/HR ≥ {effect_size_cutoffs['Very Large']:.2f} or ≤ {1/effect_size_cutoffs['Very Large']:.2f}", value=True, disabled=not outcomes_with_ratio_sel)
-effect_size_sel["Large"] = cols[3].checkbox("Large", help=f"RR/OR/HR (≥ {effect_size_cutoffs['Large']:.2f} and < {effect_size_cutoffs['Very Large']:.2f}) or (> {1/effect_size_cutoffs['Very Large']:.2f} and ≤ {1/effect_size_cutoffs['Large']:.2f})", value=True, disabled=not outcomes_with_ratio_sel)
-effect_size_sel["Medium"] = cols[4].checkbox("Medium", help=f"RR/OR/HR (≥ {effect_size_cutoffs['Medium']:.2f} and < {effect_size_cutoffs['Large']:.2f}) or (> {1/effect_size_cutoffs['Large']:.2f} and ≤ {1/effect_size_cutoffs['Medium']:.2f})", value=True, disabled=not outcomes_with_ratio_sel)
-effect_size_sel["Small"] = cols[5].checkbox("Small", help=f"RR/OR/HR (≥ {effect_size_cutoffs['Small']:.2f} and < {effect_size_cutoffs['Medium']:.2f}) or (> {1/effect_size_cutoffs['Medium']:.2f} and ≤ {1/effect_size_cutoffs['Small']:.2f})", value=True, disabled=not outcomes_with_ratio_sel)
-effect_size_sel["Minimal"] = cols[6].checkbox("Minimal", help=f"RR/OR/HR (≥ {effect_size_cutoffs['Minimal']:.2f} and < {effect_size_cutoffs['Small']:.2f}) or (> {1/effect_size_cutoffs['Small']:.2f} and ≤ {1/effect_size_cutoffs['Minimal']:.2f})", value=True, disabled=not outcomes_with_ratio_sel)
-
-ci_not_very_wide_sel = cols[7].checkbox("CI not very wide", help="Confidence Interval (CI) ratio (upper/lower) ≤ 3 for RR or ≤ 2.5 for OR/HR (Compare: GRADE Guidance 34: update on rating imprecision using a minimally contextualized approach. Zeng, Linan et al. Journal of Clinical Epidemiology. 2022. Volume 150, 216 - 224.)", value=True, disabled=not outcomes_with_ratio_sel)
-ci_very_wide_sel = cols[8].checkbox("CI very wide", help="Confidence Interval (CI) ratio (upper/lower) > 3 for RR or > 2.5 for OR/HR (Compare: GRADE Guidance 34: update on rating imprecision using a minimally contextualized approach. Zeng, Linan et al. Journal of Clinical Epidemiology. 2022. Volume 150, 216 - 224.)", value=True, disabled=not outcomes_with_ratio_sel)
-
-# effect_size_range = st.select_slider(
-#     "Select Effect Size Range",
-#     options=[1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0, 4.25, 4.5, 4.75, 5.0, "infinity"],
-#     value=(1.0, "infinity"),
-# )
-# effect_size_range = st.select_slider(
-#     "Confidence Interval Ratio (Upper/Lower)",
-#     options=[1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0, 4.25, 4.5, 4.75, 5.0, "infinity"],
-#     value=1.0,
-# )
-#effect_size_sel = st.radio("Effect size", ["Very Large", "Large", "Medium", "Small", "Minimal", "Any"], index=5, help="Only for Outcomes with ratios. Outcomes with Very Large effects are those with RR/OR/HR ≥ 5 or ≤ 0.2.", horizontal=True, disabled=not outcomes_with_ratio_sel)
-#if not outcomes_with_ratio_sel:
-#    effect_size_sel = "Both"
-#significance_sel = st.radio("Statistical significance", ["Significant", "Nonsignificant", "Any"], index=2, help="Only for Outcomes with ratios. Significant outcomes are those with RR/OR/HR confidence intervals (CIs) not including 1.", horizontal=True, disabled=not outcomes_with_ratio_sel)
-#if not outcomes_with_ratio_sel:
-#    significance_sel = "Both"
+    st.subheader("Confidence Interval")
+    ci_not_very_wide_sel = st.checkbox("CI not very wide", help="Confidence Interval (CI) ratio (upper/lower) ≤ 3 for RR or ≤ 2.5 for OR/HR (Compare: GRADE Guidance 34: update on rating imprecision using a minimally contextualized approach. Zeng, Linan et al. Journal of Clinical Epidemiology. 2022. Volume 150, 216 - 224.)", value=True, disabled=not outcomes_with_ratio_sel)
+    ci_very_wide_sel = st.checkbox("CI very wide", help="Confidence Interval (CI) ratio (upper/lower) > 3 for RR or > 2.5 for OR/HR (Compare: GRADE Guidance 34: update on rating imprecision using a minimally contextualized approach. Zeng, Linan et al. Journal of Clinical Epidemiology. 2022. Volume 150, 216 - 224.)", value=True, disabled=not outcomes_with_ratio_sel)
 
 # Filter sof_dfs to match filtered reviews
 
@@ -267,7 +241,7 @@ cochrane_info_sub, final_sof_df_sub = get_filtered_data()
 #%%
 st.subheader(f"{len(cochrane_info_sub)} / {len(cochrane_info)} Reviews with {len(final_sof_df_sub)} / {len(final_sof_df)} Outcomes*")
 
-"\*Only outcomes with a GRADE rating and with positive Number of Participants and/or Studies are considered."
+"\*Only reviews published until 2025/03 and outcomes with a GRADE rating and with positive Number of Participants and/or Studies are considered."
 
 cols = st.columns([1.5,1])
 
